@@ -1,0 +1,27 @@
+# policy_config.yaml — thresholds, allowlists, and trust weights.
+# Referenced by all four Rego files as data.policy_config.
+# Hot-reloadable: sidecar watches this file and reloads without restart.
+
+thresholds:
+  block_score: 0.85      # risk score >= this → BLOCK
+  sanitise_score: 0.50   # risk score >= this → SANITISE
+
+trust_weights:
+  user_input: 1.0        # highest — direct prompt injection risk
+  tool_output: 0.8
+  rag_chunk: 0.7
+  memory_read: 0.6
+
+tool_allowlist: []       # populate with permitted tool names e.g. ["search", "calculator"]
+
+memory_key_allowlist: [] # populate with permitted memory keys; empty = allow all
+
+signal_weights:          # per-signal contribution to risk score
+  jailbreak_pattern: 0.9
+  instruction_override: 0.85
+  role_escalation: 0.8
+  shell_metachar: 0.75
+  path_traversal: 0.75
+  embedded_instruction: 0.65
+  structural_anomaly: 0.40
+  hmac_invalid: 1.0      # always hard block

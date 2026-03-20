@@ -6,9 +6,11 @@ __pycache__/
 # C extensions
 *.so
 
+
 # Distribution / packaging
 .Python
 build/
+.archived/
 develop-eggs/
 dist/
 downloads/
@@ -205,3 +207,14 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Go
+bin/
+sidecar/go.sum
+
+# Config (contains no secrets but keep local overrides out of the repo)
+config/sidecar.yaml
+
+# Node / TypeScript
+sdk/typescript/dist/
+sdk/typescript/node_modules/

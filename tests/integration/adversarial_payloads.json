@@ -1,0 +1,5 @@
+{
+  "_comment": "33-payload adversarial test suite. One payload per policy threat category. Each entry specifies the hook, the raw input, and the expected decision.",
+  "_version": "1.0.0",
+  "payloads": []
+}
