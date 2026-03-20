@@ -1,5 +1,8 @@
 # ACF-SDK — Agentic Cognitive Firewall
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Build](https://github.com/c2siorg/acf-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/c2siorg/acf-sdk/actions/workflows/ci.yml)
+
 A Zero Trust security layer for LLM agents. Enforces policy-driven validation at every point an agent ingests input — not just at the front door.
 
 > **Status: active development — Phase 1 (wire protocol) in progress.**
