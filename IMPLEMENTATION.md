@@ -1,10 +1,26 @@
-## Implementation Strategy 
-- Sidecar: Go 1.26 (Point 8: Centralized Enforcement) 
-- SDK: Python 3.13 (Point 7: SDK-First Integration) 
-- Transport: UDS (Point 3: Minimal Overhead) 
-## Updated Pipeline Flow (Ref: Issue #3) 
-1. SDK Interceptor (Python) - Pipe 
-2. Policy-as-Code Engine (Go/YAML) - **Entry Point** 
-3. Normalization Gate (Deterministic Logic) 
-4. Heuristic/Semantic Scans 
-5. Risk Aggregator - Decision (PASS/BLOCK) 
+## 🛠️ Implementation Strategy (Finalized v1.5)
+- **Sidecar:** Go 1.26 (Centralized Enforcement)
+- **SDK:** Python 3.13 (SDK-First Integration)
+- **Transport:** UDS/Named Pipes (Minimal Overhead)
+
+## 🏗️ The 3-Layer Shield (Ref: Issue #3)
+To meet the strict **<10ms latency requirement**, the Go PDP follows a tiered "Short-Circuit" execution model.
+
+
+
+### 1. SDK Interceptor (Python)
+Captures the prompt at the source before it hits the LLM.
+
+### 2. Normalization Gate (L1 - Go)
+* **Mechanism:** Base64 Decoding & Unicode Normalization.
+* **Latency:** ~0.1ms.
+
+### 3. Lexical Scanner (L2 - Go)
+* **Mechanism:** High-speed Regex Pattern Matching.
+* **Purpose:** Deterministic blocking of SQLi and Prompt Injection.
+* **Latency:** ~0.5ms.
+
+### 4. Risk Aggregator & Watchdog (L3 - Go)
+* **Mechanism:** Context-aware scanning (Heuristics).
+* **Safety:** Enforced by a **9ms `context.WithTimeout`**.
+* **Decision:** Fail-Closed (PASS/BLOCK).
