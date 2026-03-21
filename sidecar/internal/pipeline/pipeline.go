@@ -3,58 +3,65 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
 
-	// LOCAL IMPORTS: Ensuring we use the 'sidecar' module prefix
-	"sidecar/internal/policy"
-	"sidecar/pkg/riskcontext"
+	"github.com/c2siorg/acf-sdk/sidecar/pkg/riskcontext"
+	"github.com/eddymontana/acf-sdk/pkg/kernel"
+	"github.com/open-policy-agent/opa/rego"
 )
 
-// Pipeline handles the sequential processing of a request.
-// As an AI/ML Engineer, you can think of this as a preprocessing and 
-// inference pipeline for security signals.
-type Pipeline struct {
-	// Future-proofing: You can add shared resources like 
-	// regex caches, model loaders, or database connections here.
+func ExecuteLexicalScan(ctx *riskcontext.RiskContext) {
+	result := kernel.LexicalScan(ctx.RawPayload)
+	ctx.RiskScore = float64(result.RiskScore)
+	if result.MatchedPattern != "" {
+		ctx.Signals["kernel_match"] = result.MatchedPattern
+	}
 }
 
-// Process evaluates a raw payload and returns a final PolicyResult.
-// It coordinates the flow from raw bytes to a finalized OPA decision.
-func (p *Pipeline) Process(ctx context.Context, raw []byte, hookType string) (*riskcontext.PolicyResult, error) {
-	// 1. Initialize the shared RiskContext.
-	// This state object travels through the pipeline stages.
-	riskCtx := &riskcontext.RiskContext{
-		RawPayload: string(raw),
-		HookType:   hookType,
-		Signals:    make(map[string]interface{}),
+func EvaluatePolicy(ctx *riskcontext.RiskContext) (bool, string, error) {
+	regoInput := map[string]interface{}{
+		"risk_score": ctx.RiskScore,
+		"signals":    ctx.Signals,
 	}
 
-	// 2. VALIDATE: Check schema and basic integrity.
-	// If the payload is malformed (e.g., bad JSON), we fail-closed (DENY).
-	if err := Validate(riskCtx); err != nil {
-		return &riskcontext.PolicyResult{
-			Decision: "DENY",
-			Reason:   "validation failed: " + err.Error(),
-		}, nil
+	// Determine the correct path to the rego file
+	policyPath := os.Getenv("ACF_POLICY_PATH")
+	if policyPath == "" {
+		// Fallback logic for local development
+		policyPath = "../sidecar/policies/main.rego"
+		if _, err := os.Stat(policyPath); os.IsNotExist(err) {
+			policyPath = "sidecar/policies/main.rego"
+		}
 	}
 
-	// 3. NORMALISE: Clean the input to prevent evasion.
-	// Strips zero-width characters and normalizes Unicode (NFC/NFKC).
-	Normalise(riskCtx)
+	r := rego.New(
+		rego.Query("data.acf.authz.allow"),
+		rego.Load([]string{policyPath}, nil),
+	)
 
-	// 4. SCAN: Identify Jailbreaks, PII, and Forbidden Phrases.
-	// Each scan adds data to the riskCtx.Signals map.
-	Scan(riskCtx)
-
-	// 5. AGGREGATE: Calculate final risk scores.
-	// Weights the signals to provide a summary risk score for OPA.
-	Aggregate(riskCtx)
-
-	// 6. POLICY: Call the OPA Engine (Rego) for the final verdict.
-	// Separates detection logic (Scans) from business logic (Policy).
-	decision, err := policy.Evaluate(ctx, riskCtx)
+	query, err := r.PrepareForEval(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("policy evaluation error: %w", err)
+		return false, fmt.Sprintf("policy_load_error: %v", err), err
 	}
 
-	return decision, nil
+	results, err := query.Eval(context.Background(), rego.EvalInput(regoInput))
+	if err != nil {
+		return false, "evaluation_error", err
+	}
+
+	if len(results) == 0 {
+		return false, "no_policy_match", fmt.Errorf("no results from OPA")
+	}
+
+	isAllowed, ok := results[0].Expressions[0].Value.(bool)
+	if !ok {
+		return false, "type_mismatch", fmt.Errorf("OPA result was not a boolean")
+	}
+
+	reason := "content_safe"
+	if !isAllowed {
+		reason = "malicious_content_detected"
+	}
+
+	return isAllowed, reason, nil
 }

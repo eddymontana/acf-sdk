@@ -1,37 +1,46 @@
 package transport
 
 import (
-	"context" // Added context for compatibility with Process()
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
 
-	// LOCAL IMPORTS: Using the 'sidecar' module prefix
-	"sidecar/internal/crypto"
-	"sidecar/internal/pipeline"
+	// NATIVE WINDOWS IPC
+	"github.com/Microsoft/go-winio"
+
+	// MODULE-ALIGNED IMPORTS
+	"github.com/c2siorg/acf-sdk/sidecar/internal/crypto"
+	"github.com/c2siorg/acf-sdk/sidecar/internal/pipeline"
+	"github.com/c2siorg/acf-sdk/sidecar/pkg/riskcontext"
 )
 
-// In production, this would be loaded from a secure environment variable or KMS
-var sharedSecret = []byte("gsoc-acf-super-secret-key-2026")
+// getSharedSecret pulls the HMAC key from the environment.
+func getSharedSecret() []byte {
+	key := os.Getenv("ACF_HMAC_KEY")
+	if key == "" {
+		return []byte("gsoc-acf-super-secret-key-2026")
+	}
+	return []byte(key)
+}
 
-// StartUDSListener sets up the Unix Domain Socket (or Named Pipe) server.
-// Since we are on Windows for this build, we use the pipe logic from main.go,
-// but this listener handles the higher-level connection logic.
-func StartUDSListener(socketPath string) {
-	if _, err := os.Stat(socketPath); err == nil {
-		os.Remove(socketPath)
+func StartUDSListener(unusedPath string) {
+	pipePath := `\\.\pipe\acf_security_pipe`
+
+	config := &winio.PipeConfig{
+		MessageMode:      true,
+		InputBufferSize:  65536,
+		OutputBufferSize: 65536,
 	}
 
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := winio.ListenPipe(pipePath, config)
 	if err != nil {
-		log.Fatalf("CRITICAL: Failed to start UDS listener: %v", err)
+		log.Fatalf("CRITICAL: Failed to start Windows Named Pipe: %v", err)
 	}
 	defer listener.Close()
 
-	log.Printf("🛡️ ACF Kernel Active: Listening on %s", socketPath)
+	log.Printf("🛡️ ACF Kernel Active: Listening on Named Pipe -> %s", pipePath)
 
 	for {
 		conn, err := listener.Accept()
@@ -45,13 +54,10 @@ func StartUDSListener(socketPath string) {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-	
-	// Initialize the Pipeline Orchestrator (Orchestrates scans and policy)
-	p := &pipeline.Pipeline{}
+	secret := getSharedSecret()
 
 	for {
-		// 1. Read the Binary Frame (The Envelope)
-		// Note: ReadFrame must be defined in your transport package
+		// 1. Read the Binary Frame (Using the existing ReadFrame in frame.go)
 		frame, err := ReadFrame(conn)
 		if err != nil {
 			if err == io.EOF {
@@ -63,27 +69,45 @@ func handleConnection(conn net.Conn) {
 		}
 
 		// 2. CRYPTO: Verify HMAC Integrity
-		// This prevents "Man-in-the-Middle" or unauthorized prompt injections
-		// from bypassing the kernel.
-		if !crypto.VerifyHMAC(frame.Payload, frame.HMAC[:], sharedSecret) {
-			log.Printf("🚫 SECURITY ALERT: HMAC Mismatch from %s! Dropping connection.", conn.RemoteAddr())
+		if !crypto.VerifyHMAC(frame.Payload, frame.HMAC[:], secret) {
+			log.Printf("🚫 SECURITY ALERT: HMAC Mismatch!")
+			sendErrorResponse(conn, "unauthorized: hmac mismatch")
 			return
 		}
 
-		// 3. PIPELINE: Process the verified payload
-		// We pass a background context to the pipeline stages.
-		result, err := p.Process(context.Background(), frame.Payload, "on_prompt")
+		// 3. PIPELINE: Initialize RiskContext
+		ctx := &riskcontext.RiskContext{
+			RawPayload: string(frame.Payload),
+			Signals:    make(map[string]interface{}),
+		}
+
+		// 4. SCAN: Run the Aho-Corasick Kernel
+		pipeline.ExecuteLexicalScan(ctx)
+
+		// 5. POLICY: Ask OPA for the final Decision
+		isAllowed, reason, err := pipeline.EvaluatePolicy(ctx)
 		if err != nil {
-			log.Printf("❌ Pipeline Error: %v", err)
-			sendErrorResponse(conn, err.Error())
+			log.Printf("❌ Policy Evaluation Error: %v", err)
+			sendErrorResponse(conn, "policy_engine_failure")
 			continue
 		}
 
-		// 4. RESPONSE: Serialize the Result back to the SDK
-		responseJSON, _ := json.Marshal(result)
-		conn.Write(responseJSON)
-		
-		log.Printf("✅ Decision: %s | ID: %x...", result.Decision, frame.Nonce[:4])
+		decision := "ALLOW"
+		if !isAllowed {
+			decision = "DENY"
+		}
+
+		// 6. RESPONSE: Build and Send JSON
+		response := fmt.Sprintf(`{"decision":"%s","reason":"%s","score":%v}`, 
+			decision, reason, ctx.RiskScore)
+
+		_, err = conn.Write([]byte(response))
+		if err != nil {
+			log.Printf("🔌 Pipe Write Error: %v", err)
+			return
+		}
+
+		log.Printf("✅ OPA Decision: %s | Score: %v", decision, ctx.RiskScore)
 	}
 }
 

@@ -205,3 +205,32 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# --- ACF-SDK Custom Additions ---
+
+# Go Binaries (Crucial!)
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+sidecar/sidecar.test
+
+# OPA / Rego temporary files
+*.rego.test
+.managed/
+
+# Local Environment / Secrets
+.env
+.env.local
+ACF_HMAC_KEY
+
+# Windows System Files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+*.sock

@@ -1,15 +1,14 @@
 package riskcontext
 
-// RiskContext holds the state of a request as it moves through the pipeline
+// RiskContext matches the "Seam 2" definition in the README.
 type RiskContext struct {
-	RawPayload string                 // Original input from SDK
-	HookType   string                 // e.g., "on_prompt", "on_response"
-	RiskScore  float64                // Calculated risk (0-100)
-	Signals    map[string]interface{} // Key-Value pairs for OPA (e.g., "jailbreak_detected": true)
+	RawPayload string                 `json:"raw_payload"`
+	HookType   string                 `json:"hook_type"`
+	RiskScore  float64                `json:"risk_score"` // Updated to float64 for 0.0-1.0 range
+	Signals    map[string]interface{} `json:"signals"`
 }
 
-// PolicyResult is the final output sent back to the Python SDK
 type PolicyResult struct {
-	Decision string `json:"decision"` // "ALLOW" or "DENY"
-	Reason   string `json:"reason"`   // Brief explanation for the decision
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
 }

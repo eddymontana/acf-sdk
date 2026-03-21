@@ -1,4 +1,4 @@
-module sidecar
+module github.com/c2siorg/acf-sdk/sidecar
 
 go 1.26.1
 
@@ -8,10 +8,14 @@ require (
 	golang.org/x/text v0.35.0
 )
 
+require github.com/cloudflare/ahocorasick v0.0.0-20240916140611-054963ec9396 // indirect
+
 require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
+	github.com/eddymontana/acf-sdk v0.0.0-00010101000000-000000000000 // indirect
+	github.com/eddymontana/acf-sdk/pkg/kernel v0.0.0
 	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -38,3 +42,7 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/eddymontana/acf-sdk => ../
+
+replace github.com/eddymontana/acf-sdk/pkg/kernel => ../pkg/kernel

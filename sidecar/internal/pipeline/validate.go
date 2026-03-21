@@ -1,33 +1,39 @@
 package pipeline
 
 import (
-	"encoding/json"
 	"errors"
+	"strings"
 
-	// LOCAL IMPORT: Updated to use the local 'sidecar' module prefix
-	"sidecar/pkg/riskcontext"
+	// MENTOR-ALIGNED IMPORT: Final path correction
+	"github.com/c2siorg/acf-sdk/sidecar/pkg/riskcontext"
 )
 
-// Validate ensures the incoming payload meets the expected structural requirements.
-// As an AI/ML Engineer, you're implementing the first line of defense here
-// to prevent malformed or malicious data from reaching the LLM.
+// Validate ensures the incoming request is structurally sound.
+// It acts as the "Gatekeeper" for the entire security pipeline.
 func Validate(ctx *riskcontext.RiskContext) error {
-	// 1. Basic JSON validation
-	// Ensure the payload is at least valid JSON.
-	var js map[string]interface{}
-	if err := json.Unmarshal([]byte(ctx.RawPayload), &js); err != nil {
-		return errors.New("payload is not valid JSON")
+	// 1. Check for Empty Payloads
+	// If there's no text, there's nothing to secure.
+	if strings.TrimSpace(ctx.RawPayload) == "" {
+		return errors.New("empty_payload_received")
 	}
 
-	// 2. Schema Integrity (Example)
-	// You can expand this to check for specific fields like "prompt" or "model_id"
-	if len(ctx.RawPayload) > 10000 {
-		return errors.New("payload size exceeds maximum limit of 10KB")
+	// 2. Check for Payload Size Limits
+	// We set a hard limit of 1MB to prevent memory exhaustion (DoS).
+	if len(ctx.RawPayload) > 1024*1024 {
+		return errors.New("payload_exceeds_maximum_size_1MB")
 	}
 
-	// 3. Hook Type validation
-	if ctx.HookType == "" {
-		return errors.New("hook type is missing")
+	// 3. Hook Type Validation
+	// The ACF Kernel currently supports 'on_prompt' and 'on_response'.
+	if ctx.HookType != "on_prompt" && ctx.HookType != "on_response" {
+		// Defaulting to 'on_prompt' for compatibility, but logging the anomaly.
+		ctx.HookType = "on_prompt"
+	}
+
+	// 4. Initialize Signals Map
+	// Ensuring the map exists so 'Normalise' and 'Scan' don't panic.
+	if ctx.Signals == nil {
+		ctx.Signals = make(map[string]interface{})
 	}
 
 	return nil

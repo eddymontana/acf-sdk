@@ -2,13 +2,14 @@ package transport
 
 import (
 	"encoding/binary"
-	"errors"
+	"fmt"
 	"io"
 )
 
 const (
-	MagicByte = 0xAC // "AC" for ACF-SDK
-	Version   = 0x01
+	MagicByte      = 0xAC 
+	Version        = 0x01
+	MaxPayloadSize = 10 * 1024 * 1024 // 🛡️ 10MB Cap to prevent OOM attacks
 )
 
 // Frame represents the wire-format envelope
@@ -20,7 +21,7 @@ type Frame struct {
 	Payload []byte
 }
 
-// ReadFrame parses the binary data from the UDS connection
+// ReadFrame parses the binary data from the connection with safety checks
 func ReadFrame(r io.Reader) (*Frame, error) {
 	// 1. Check Magic Byte
 	var magic uint8
@@ -28,25 +29,65 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 		return nil, err
 	}
 	if magic != MagicByte {
-		return nil, errors.New("invalid magic byte: protocol mismatch")
+		return nil, fmt.Errorf("protocol mismatch: expected 0x%X, got 0x%X", MagicByte, magic)
 	}
 
 	frame := &Frame{}
+	
 	// 2. Read Version
-	binary.Read(r, binary.BigEndian, &frame.Version)
+	if err := binary.Read(r, binary.BigEndian, &frame.Version); err != nil {
+		return nil, err
+	}
 
-	// 3. Read Length of Payload
-	binary.Read(r, binary.BigEndian, &frame.Length)
+	// 3. Read Length and Validate
+	if err := binary.Read(r, binary.BigEndian, &frame.Length); err != nil {
+		return nil, err
+	}
+	if frame.Length > MaxPayloadSize {
+		return nil, fmt.Errorf("payload too large: %d bytes (max %d)", frame.Length, MaxPayloadSize)
+	}
 
-	// 4. Read Nonce (to prevent replay attacks)
-	io.ReadFull(r, frame.Nonce[:])
+	// 4. Read Nonce (Replay Protection)
+	if _, err := io.ReadFull(r, frame.Nonce[:]); err != nil {
+		return nil, err
+	}
 
-	// 5. Read HMAC (for integrity)
-	io.ReadFull(r, frame.HMAC[:])
+	// 5. Read HMAC (Integrity)
+	if _, err := io.ReadFull(r, frame.HMAC[:]); err != nil {
+		return nil, err
+	}
 
-	// 6. Read Actual Payload
-	frame.Payload = make([]byte, frame.Length)
-	_, err := io.ReadFull(r, frame.Payload)
+	// 6. Read Actual Payload safely
+	if frame.Length > 0 {
+		frame.Payload = make([]byte, frame.Length)
+		if _, err := io.ReadFull(r, frame.Payload); err != nil {
+			return nil, err
+		}
+	}
 
-	return frame, err
+	return frame, nil
+}
+
+// WriteFrame is the reverse: it packs a Frame into bytes for the connection
+func WriteFrame(w io.Writer, f *Frame) error {
+	// Write Magic, Version, and Length
+	if err := binary.Write(w, binary.BigEndian, uint8(MagicByte)); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, f.Version); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, uint32(len(f.Payload))); err != nil {
+		return err
+	}
+	
+	// Write Nonce, HMAC, and Payload
+	if _, err := w.Write(f.Nonce[:]); err != nil {
+		return err
+	}
+	if _, err := w.Write(f.HMAC[:]); err != nil {
+		return err
+	}
+	_, err := w.Write(f.Payload)
+	return err
 }
