@@ -1,67 +1,34 @@
+// pipeline.go — The Engine Room. 
+// Orchestrates the 4 stages of the PDP pipeline.
 package pipeline
 
 import (
-	"context"
-	"fmt"
-	"os"
-
 	"github.com/c2siorg/acf-sdk/sidecar/pkg/riskcontext"
-	"github.com/eddymontana/acf-sdk/pkg/kernel"
-	"github.com/open-policy-agent/opa/rego"
 )
 
-func ExecuteLexicalScan(ctx *riskcontext.RiskContext) {
-	result := kernel.LexicalScan(ctx.RawPayload)
-	ctx.RiskScore = float64(result.RiskScore)
-	if result.MatchedPattern != "" {
-		ctx.Signals["kernel_match"] = result.MatchedPattern
-	}
+// PipelineInterface defines the contract for the security kernel.
+type PipelineInterface interface {
+	Process(ctx *riskcontext.RiskContext)
 }
 
-func EvaluatePolicy(ctx *riskcontext.RiskContext) (bool, string, error) {
-	regoInput := map[string]interface{}{
-		"risk_score": ctx.RiskScore,
-		"signals":    ctx.Signals,
+// Pipeline is the concrete implementation of the 4-stage engine.
+type Pipeline struct{}
+
+// Process executes the sequential stages of the Cognitive Firewall.
+func (p *Pipeline) Process(ctx *riskcontext.RiskContext) {
+	// Stage 1: Validate (Structural & Integrity check)
+	if err := Validate(ctx); err != nil {
+		ctx.RiskScore = 1.0 // Maximum risk on validation failure
+		ctx.Signals["error"] = err.Error()
+		return
 	}
 
-	// Determine the correct path to the rego file
-	policyPath := os.Getenv("ACF_POLICY_PATH")
-	if policyPath == "" {
-		// Fallback logic for local development
-		policyPath = "../sidecar/policies/main.rego"
-		if _, err := os.Stat(policyPath); os.IsNotExist(err) {
-			policyPath = "sidecar/policies/main.rego"
-		}
-	}
+	// Stage 2: Normalise (De-obfuscation & Unicode cleaning)
+	Normalise(ctx)
 
-	r := rego.New(
-		rego.Query("data.acf.authz.allow"),
-		rego.Load([]string{policyPath}, nil),
-	)
+	// Stage 3: Scan (Aho-Corasick Lexical Analysis)
+	Scan(ctx)
 
-	query, err := r.PrepareForEval(context.Background())
-	if err != nil {
-		return false, fmt.Sprintf("policy_load_error: %v", err), err
-	}
-
-	results, err := query.Eval(context.Background(), rego.EvalInput(regoInput))
-	if err != nil {
-		return false, "evaluation_error", err
-	}
-
-	if len(results) == 0 {
-		return false, "no_policy_match", fmt.Errorf("no results from OPA")
-	}
-
-	isAllowed, ok := results[0].Expressions[0].Value.(bool)
-	if !ok {
-		return false, "type_mismatch", fmt.Errorf("OPA result was not a boolean")
-	}
-
-	reason := "content_safe"
-	if !isAllowed {
-		reason = "malicious_content_detected"
-	}
-
-	return isAllowed, reason, nil
+	// Stage 4: Aggregate (Weighted Trust Scoring)
+	Aggregate(ctx)
 }

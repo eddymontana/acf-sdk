@@ -1,117 +1,123 @@
+// listener.go — IPC accept loop.
 package transport
 
 import (
-	"fmt"
-	"io"
 	"log"
 	"net"
-	"os"
 
-	// NATIVE WINDOWS IPC
-	"github.com/Microsoft/go-winio"
-
-	// MODULE-ALIGNED IMPORTS
 	"github.com/c2siorg/acf-sdk/sidecar/internal/crypto"
-	"github.com/c2siorg/acf-sdk/sidecar/internal/pipeline"
 	"github.com/c2siorg/acf-sdk/sidecar/pkg/riskcontext"
 )
 
-// getSharedSecret pulls the HMAC key from the environment.
-func getSharedSecret() []byte {
-	key := os.Getenv("ACF_HMAC_KEY")
-	if key == "" {
-		return []byte("gsoc-acf-super-secret-key-2026")
-	}
-	return []byte(key)
+// Config holds listener configuration.
+type Config struct {
+	Address    string
+	Connector  Connector
+	Signer     *crypto.Signer
+	NonceStore *crypto.NonceStore
+	// Pipeline is added here to bridge to Phase 2
+	Pipeline   PipelineInterface 
 }
 
-func StartUDSListener(unusedPath string) {
-	pipePath := `\\.\pipe\acf_security_pipe`
+type PipelineInterface interface {
+	Process(ctx *riskcontext.RiskContext)
+}
 
-	config := &winio.PipeConfig{
-		MessageMode:      true,
-		InputBufferSize:  65536,
-		OutputBufferSize: 65536,
+// Listener wraps a platform net.Listener.
+type Listener struct {
+	cfg    Config
+	ln     net.Listener
+	stopCh chan struct{}
+}
+
+func NewListener(cfg Config) (*Listener, error) {
+	if cfg.Address == "" {
+		cfg.Address = cfg.Connector.DefaultAddress()
 	}
-
-	listener, err := winio.ListenPipe(pipePath, config)
+	if err := cfg.Connector.Cleanup(cfg.Address); err != nil {
+		return nil, err
+	}
+	ln, err := cfg.Connector.Listen(cfg.Address)
 	if err != nil {
-		log.Fatalf("CRITICAL: Failed to start Windows Named Pipe: %v", err)
+		return nil, err
 	}
-	defer listener.Close()
-
-	log.Printf("🛡️ ACF Kernel Active: Listening on Named Pipe -> %s", pipePath)
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("Connection Error: %v", err)
-			continue
-		}
-		go handleConnection(conn)
-	}
+	return &Listener{cfg: cfg, ln: ln, stopCh: make(chan struct{})}, nil
 }
 
-func handleConnection(conn net.Conn) {
-	defer conn.Close()
-	secret := getSharedSecret()
-
+func (l *Listener) Serve() error {
 	for {
-		// 1. Read the Binary Frame (Using the existing ReadFrame in frame.go)
-		frame, err := ReadFrame(conn)
+		conn, err := l.ln.Accept()
 		if err != nil {
-			if err == io.EOF {
-				log.Println("🔌 SDK Disconnected.")
-				return
+			select {
+			case <-l.stopCh:
+				return nil
+			default:
+				return err
 			}
-			log.Printf("⚠️ Security Warning: Malformed frame: %v", err)
-			return
 		}
-
-		// 2. CRYPTO: Verify HMAC Integrity
-		if !crypto.VerifyHMAC(frame.Payload, frame.HMAC[:], secret) {
-			log.Printf("🚫 SECURITY ALERT: HMAC Mismatch!")
-			sendErrorResponse(conn, "unauthorized: hmac mismatch")
-			return
-		}
-
-		// 3. PIPELINE: Initialize RiskContext
-		ctx := &riskcontext.RiskContext{
-			RawPayload: string(frame.Payload),
-			Signals:    make(map[string]interface{}),
-		}
-
-		// 4. SCAN: Run the Aho-Corasick Kernel
-		pipeline.ExecuteLexicalScan(ctx)
-
-		// 5. POLICY: Ask OPA for the final Decision
-		isAllowed, reason, err := pipeline.EvaluatePolicy(ctx)
-		if err != nil {
-			log.Printf("❌ Policy Evaluation Error: %v", err)
-			sendErrorResponse(conn, "policy_engine_failure")
-			continue
-		}
-
-		decision := "ALLOW"
-		if !isAllowed {
-			decision = "DENY"
-		}
-
-		// 6. RESPONSE: Build and Send JSON
-		response := fmt.Sprintf(`{"decision":"%s","reason":"%s","score":%v}`, 
-			decision, reason, ctx.RiskScore)
-
-		_, err = conn.Write([]byte(response))
-		if err != nil {
-			log.Printf("🔌 Pipe Write Error: %v", err)
-			return
-		}
-
-		log.Printf("✅ OPA Decision: %s | Score: %v", decision, ctx.RiskScore)
+		go l.handleConn(conn)
 	}
 }
 
-func sendErrorResponse(conn net.Conn, message string) {
-	resp := fmt.Sprintf(`{"decision": "ERROR", "reason": "%s"}`, message)
-	conn.Write([]byte(resp))
+func (l *Listener) Stop() {
+	select {
+	case <-l.stopCh:
+	default:
+		close(l.stopCh)
+	}
+	l.ln.Close()
+}
+
+func (l *Listener) handleConn(conn net.Conn) {
+	defer conn.Close()
+
+	// 1. Decode using your Binary Frame logic
+	rf, err := DecodeRequest(conn)
+	if err != nil {
+		log.Printf("transport: decode error: %v", err)
+		return
+	}
+
+	// 2. Verify HMAC using Tharindu's Signer
+	length := uint32(len(rf.Payload))
+	signedMsg := SignedMessage(rf.Version, length, rf.Nonce, rf.Payload)
+	if !l.cfg.Signer.Verify(signedMsg, rf.HMAC[:]) {
+		log.Printf("transport: security alert: HMAC mismatch")
+		return
+	}
+
+	// 3. Check nonce replay using Tharindu's Store
+	if l.cfg.NonceStore.Seen(rf.Nonce[:]) {
+		log.Printf("transport: security alert: Replay detected")
+		return
+	}
+
+	// 4. Phase 2: Execute your Pipeline
+	ctx := &riskcontext.RiskContext{
+		RawPayload: string(rf.Payload),
+		Signals:    make(map[string]interface{}),
+	}
+
+	// This is where your Scan/Normalise/OPA logic is called
+	if l.cfg.Pipeline != nil {
+		l.cfg.Pipeline.Process(ctx)
+	}
+
+	// 5. Encode and Write Response
+	respFrame := &ResponseFrame{
+		Decision: mapDecision(ctx.RiskScore),
+		Reason:   "policy_evaluation_complete",
+	}
+	
+	resp := EncodeResponse(respFrame)
+	if _, err := conn.Write(resp); err != nil {
+		log.Printf("transport: write error: %v", err)
+	}
+}
+
+func mapDecision(score float64) string {
+	if score >= 100 {
+		return "BLOCK"
+	}
+	return "ALLOW"
 }

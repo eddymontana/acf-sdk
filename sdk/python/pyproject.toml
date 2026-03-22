@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acf-sdk"
+version = "0.1.0"
+description = "Agentic Cognitive Firewall SDK — Python client"
+requires-python = ">=3.10"
+dependencies = []  # zero external dependencies — stdlib only
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

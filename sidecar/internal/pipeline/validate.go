@@ -1,37 +1,54 @@
+// validate.go — Stage 1 of the pipeline.
 package pipeline
 
 import (
 	"errors"
 	"strings"
 
-	// MENTOR-ALIGNED IMPORT: Final path correction
 	"github.com/c2siorg/acf-sdk/sidecar/pkg/riskcontext"
 )
 
-// Validate ensures the incoming request is structurally sound.
-// It acts as the "Gatekeeper" for the entire security pipeline.
+const MaxPayloadSize = 1024 * 1024 // 1MB
+
+// Validate ensures the incoming request is structurally sound and verified.
 func Validate(ctx *riskcontext.RiskContext) error {
-	// 1. Check for Empty Payloads
-	// If there's no text, there's nothing to secure.
+	// 1. Structural Sanity Check
+	// Prevents empty or whitespace-only payloads from consuming resources.
 	if strings.TrimSpace(ctx.RawPayload) == "" {
-		return errors.New("empty_payload_received")
+		return errors.New("err: empty_payload")
 	}
 
-	// 2. Check for Payload Size Limits
-	// We set a hard limit of 1MB to prevent memory exhaustion (DoS).
-	if len(ctx.RawPayload) > 1024*1024 {
-		return errors.New("payload_exceeds_maximum_size_1MB")
+	// 2. Resource Protection (DoS Mitigation)
+	// Hard 1MB limit as specified in the Phase 2 goals.
+	if len(ctx.RawPayload) > MaxPayloadSize {
+		return errors.New("err: payload_too_large")
 	}
 
-	// 3. Hook Type Validation
-	// The ACF Kernel currently supports 'on_prompt' and 'on_response'.
-	if ctx.HookType != "on_prompt" && ctx.HookType != "on_response" {
-		// Defaulting to 'on_prompt' for compatibility, but logging the anomaly.
-		ctx.HookType = "on_prompt"
+	// 3. Defence-in-Depth Verification
+	// We ensure that the transport layer successfully verified the HMAC.
+	// This signal is crucial for the OPA engine (Stage 5) to trust the source.
+	if verified, ok := ctx.Signals["transport_verified"].(bool); !ok || !verified {
+		// If the transport layer didn't set this, we treat it as an unverified/rogue request.
+		// Note: We check this here to keep the pipeline 'self-aware' of security status.
+		ctx.RiskScore = 100 
+		return errors.New("err: unverified_transport_integrity")
 	}
 
-	// 4. Initialize Signals Map
-	// Ensuring the map exists so 'Normalise' and 'Scan' don't panic.
+	// 4. Hook Context Validation (Seam 1)
+	// Ensuring the hook type is recognized so OPA pulls the correct policy files.
+	supportedHooks := map[string]bool{
+		"on_prompt":      true,
+		"on_response":    true,
+		"on_tool_call":   true,
+		"on_memory_read": true,
+	}
+
+	if !supportedHooks[ctx.HookType] {
+		// If unknown, we don't fail, but we flag it for policy-based rejection.
+		ctx.Signals["unknown_hook_type"] = true
+	}
+
+	// 5. Initialize Registry for downstream stages
 	if ctx.Signals == nil {
 		ctx.Signals = make(map[string]interface{})
 	}
