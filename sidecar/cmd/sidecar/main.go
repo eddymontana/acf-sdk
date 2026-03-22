@@ -9,39 +9,43 @@ import (
 	"time"
 
 	"github.com/c2siorg/acf-sdk/sidecar/internal/crypto"
+	"github.com/c2siorg/acf-sdk/sidecar/internal/pipeline" // 1. IMPORT THE PIPELINE
 	"github.com/c2siorg/acf-sdk/sidecar/internal/transport"
 )
 
 func main() {
 	log.Println("==========================================")
-	log.Println("   🛡️ ACF Security Sidecar (Go-PDP)       ")
-	log.Println("   Status: Phase 2 - Pipeline Active     ")
+	log.Println("    🛡️ ACF Security Sidecar (Go-PDP)       ")
+	log.Println("    Status: Phase 2 - Pipeline Active     ")
 	log.Println("==========================================")
 
-	// 1. Load HMAC key from environment (Tharindu's Way)
+	// 1. Load HMAC key from environment
 	signer, err := crypto.NewSignerFromEnv()
 	if err != nil {
 		log.Fatalf("sidecar: failed to load HMAC key: %v", err)
 	}
 
-	// 2. Start nonce store with 5-minute TTL
+	// 2. Start nonce store
 	nonceStore := crypto.NewNonceStore(5 * time.Minute)
 	defer nonceStore.Stop()
 
-	// 3. Resolve IPC address
-	// This uses your Named Pipe logic for Windows by default
+	// 3. Initialize the Pipeline (The Brain)
+	p := &pipeline.Pipeline{} // 2. CREATE THE PIPELINE INSTANCE
+
+	// 4. Resolve IPC address
 	connector := transport.DefaultConnector()
 	address := connector.DefaultAddress()
-	if p := os.Getenv("ACF_SOCKET_PATH"); p != "" {
-		address = p
+	if p_env := os.Getenv("ACF_SOCKET_PATH"); p_env != "" {
+		address = p_env
 	}
 
-	// 4. Create and start listener
+	// 5. Create and start listener (PLUG IN THE PIPELINE)
 	ln, err := transport.NewListener(transport.Config{
 		Address:    address,
 		Connector:  connector,
 		Signer:     signer,
 		NonceStore: nonceStore,
+		Pipeline:   p, // 3. CONNECT THE BRAIN TO THE EAR
 	})
 	if err != nil {
 		log.Fatalf("sidecar: failed to create listener on %s: %v", address, err)
@@ -49,7 +53,7 @@ func main() {
 
 	log.Printf("sidecar: listening on %s", address)
 
-	// 5. Serve in background; block on shutdown signal
+	// 6. Serve in background
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- ln.Serve() }()
 

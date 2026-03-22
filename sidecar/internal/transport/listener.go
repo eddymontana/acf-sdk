@@ -4,26 +4,25 @@ package transport
 import (
 	"log"
 	"net"
+	"strconv"
+	"time"
 
 	"github.com/c2siorg/acf-sdk/sidecar/internal/crypto"
 	"github.com/c2siorg/acf-sdk/sidecar/pkg/riskcontext"
 )
 
-// Config holds listener configuration.
 type Config struct {
 	Address    string
 	Connector  Connector
 	Signer     *crypto.Signer
 	NonceStore *crypto.NonceStore
-	// Pipeline is added here to bridge to Phase 2
-	Pipeline   PipelineInterface 
+	Pipeline   PipelineInterface
 }
 
 type PipelineInterface interface {
 	Process(ctx *riskcontext.RiskContext)
 }
 
-// Listener wraps a platform net.Listener.
 type Listener struct {
 	cfg    Config
 	ln     net.Listener
@@ -71,53 +70,62 @@ func (l *Listener) Stop() {
 func (l *Listener) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	// 1. Decode using your Binary Frame logic
+	// 1. Decode Request
 	rf, err := DecodeRequest(conn)
 	if err != nil {
 		log.Printf("transport: decode error: %v", err)
 		return
 	}
 
-	// 2. Verify HMAC using Tharindu's Signer
+	// 2. Verify Security
 	length := uint32(len(rf.Payload))
 	signedMsg := SignedMessage(rf.Version, length, rf.Nonce, rf.Payload)
 	if !l.cfg.Signer.Verify(signedMsg, rf.HMAC[:]) {
 		log.Printf("transport: security alert: HMAC mismatch")
 		return
 	}
-
-	// 3. Check nonce replay using Tharindu's Store
 	if l.cfg.NonceStore.Seen(rf.Nonce[:]) {
 		log.Printf("transport: security alert: Replay detected")
 		return
 	}
 
-	// 4. Phase 2: Execute your Pipeline
+	// 3. Create RiskContext
 	ctx := &riskcontext.RiskContext{
-		RawPayload: string(rf.Payload),
-		Signals:    make(map[string]interface{}),
+		SessionID:  "sid-" + strconv.FormatInt(time.Now().Unix(), 10),
+		Payload:    string(rf.Payload),
+		Signals:    []string{"transport_verified"}, 
+		Provenance: "sdk-client",
+		HookType:   "on_prompt",
 	}
 
-	// This is where your Scan/Normalise/OPA logic is called
+	// 4. Process Pipeline
 	if l.cfg.Pipeline != nil {
 		l.cfg.Pipeline.Process(ctx)
 	}
 
-	// 5. Encode and Write Response
-	respFrame := &ResponseFrame{
-		Decision: mapDecision(ctx.RiskScore),
-		Reason:   "policy_evaluation_complete",
+	// 5. Determine Decision
+	var decision byte = DecisionAllow 
+	if ctx.Score > 0.8 {
+		decision = DecisionBlock
+	} else if ctx.Score > 0.4 {
+		decision = DecisionSanitise
+	}
+
+	// 6. Map back to SanitisedPayload
+	payloadStr, ok := ctx.Payload.(string)
+	if !ok {
+		payloadStr = "" 
 	}
 	
-	resp := EncodeResponse(respFrame)
-	if _, err := conn.Write(resp); err != nil {
-		log.Printf("transport: write error: %v", err)
+	respFrame := &ResponseFrame{
+		Decision:         decision,
+		SanitisedPayload: []byte(payloadStr), // Matches frame.go
 	}
-}
 
-func mapDecision(score float64) string {
-	if score >= 100 {
-		return "BLOCK"
+	// 7. Write to Connection
+	// EncodeResponse returns the bytes; we then write them to 'conn'
+	respBytes := EncodeResponse(respFrame)
+	if _, err := conn.Write(respBytes); err != nil {
+		log.Printf("transport: response error: %v", err)
 	}
-	return "ALLOW"
 }

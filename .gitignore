@@ -16,6 +16,10 @@ sidecar/go.sum
 .envrc
 ACF_HMAC_KEY
 config/sidecar.yaml
+*.pem
+*.key
+security_audit.py
+test_client.py
 
 # IPC Sockets & Pipes
 *.sock

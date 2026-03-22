@@ -1,34 +1,39 @@
-// pipeline.go — The Engine Room. 
-// Orchestrates the 4 stages of the PDP pipeline.
 package pipeline
 
 import (
+	"fmt"
 	"github.com/c2siorg/acf-sdk/sidecar/pkg/riskcontext"
 )
 
-// PipelineInterface defines the contract for the security kernel.
 type PipelineInterface interface {
 	Process(ctx *riskcontext.RiskContext)
 }
 
-// Pipeline is the concrete implementation of the 4-stage engine.
 type Pipeline struct{}
 
-// Process executes the sequential stages of the Cognitive Firewall.
 func (p *Pipeline) Process(ctx *riskcontext.RiskContext) {
-	// Stage 1: Validate (Structural & Integrity check)
+	fmt.Printf("\n--- 🛡️  Pipeline Started (Session: %s) ---\n", ctx.SessionID)
+
+	// Stage 1: Validate
 	if err := Validate(ctx); err != nil {
-		ctx.RiskScore = 1.0 // Maximum risk on validation failure
-		ctx.Signals["error"] = err.Error()
+		fmt.Printf("❌ Stage 1 (Validate) Failed: %v\n", err)
+		ctx.Score = 1.0 
+		ctx.Signals = append(ctx.Signals, "validation_error")
 		return
 	}
+	fmt.Println("✅ Stage 1 (Validate) Passed")
 
-	// Stage 2: Normalise (De-obfuscation & Unicode cleaning)
+	// Stage 2: Normalise
 	Normalise(ctx)
+	fmt.Printf("✅ Stage 2 (Normalise) Output: %v\n", ctx.Payload)
 
-	// Stage 3: Scan (Aho-Corasick Lexical Analysis)
+	// Stage 3: Scan
 	Scan(ctx)
+	fmt.Printf("✅ Stage 3 (Scan) Score: %.2f | Signals: %v\n", ctx.Score, ctx.Signals)
 
-	// Stage 4: Aggregate (Weighted Trust Scoring)
+	// Stage 4: Aggregate
 	Aggregate(ctx)
+	fmt.Printf("✅ Stage 4 (Aggregate) Final Score: %.2f\n", ctx.Score)
+	
+	fmt.Println("--- 🏁 Pipeline Finished ---")
 }
